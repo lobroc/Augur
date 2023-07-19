@@ -414,7 +414,7 @@ calculate_auc = function(input,
           # coerce to data frame
           X0 %<>%
             extract(, subsample_idxs) %>%
-            t() %>%
+            BiocGenerics::t() %>%
             extract(, colVars(.) > 0) %>%
             as.matrix() %>%
             as.data.frame() %>%
@@ -561,9 +561,9 @@ calculate_auc = function(input,
 
         # clean up the results
         result = eval %>%
-          map2_df(., names(.), ~ mutate(.x, fold = .y)) %>%
-          set_colnames(gsub("\\.", "", colnames(.))) %>%
-          mutate(cell_type = cell_type,
+          map2_df(., row.names(folded), ~ mutate(.x, fold = .y))
+        names(result) %<>% gsub("\\.", "", .)
+        result %<>% mutate(cell_type = cell_type,
                  subsample_idx = subsample_idx)
 
         # also calculate feature importance
@@ -594,12 +594,12 @@ calculate_auc = function(input,
             map(importance_name) %>%
             map(as.data.frame) %>%
             map(~ rownames_to_column(., 'gene')) %>%
-            map2_df(names(.), ~ mutate(.x, fold = .y)) %>%
+            map2_df(1:length(.), ~ mutate(.x, fold = .y)) %>%
             mutate(cell_type = cell_type,
                    subsample_idx = subsample_idx) %>%
-            dplyr::rename(importance = impval_name) %>%
+            dplyr::rename(importance = impval_name)
             # rearrange columns
-            dplyr::select(cell_type, subsample_idx, fold, gene, importance)
+            importance %<>% dplyr::select(cell_type, subsample_idx, fold, gene, importance)
         } else if (classifier == "lr") {
           # standardized coefficients with Agresti method
           # cf. https://think-lab.github.io/d/205/#3
