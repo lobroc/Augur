@@ -139,12 +139,13 @@ calculate_auc = function(input,
                          n_threads = 4,
                          show_progress = T,
                          augur_mode = c('default', 'velocity', 'permute'),
-                         classifier = c("rf", "lr"),
+                         classifier = c("rf", "lr", "merf"),
                          # random forest parameters
                          rf_params = list(trees = 100,
                                           mtry = 2,
                                           min_n = NULL,
-                                          importance = 'accuracy'),
+                                          importance = 'accuracy',
+                                          target.label = '0'),
                          # logistic regression parameters
                          lr_params = list(mixture = 1, penalty = 'auto')
 ) {
@@ -317,6 +318,8 @@ calculate_auc = function(input,
     apply_fun = mclapply
   }
 
+  # apply_fun = lapply
+
   # check augur mode
   if (augur_mode == 'velocity') {
     # reset feature selection
@@ -332,7 +335,8 @@ calculate_auc = function(input,
     
   # iterate over cell type clusters
   res = apply_fun(unique(cell_types),
-    mc.cores = n_threads, function(cell_type) {
+    mc.cores = n_threads,
+    function(cell_type) {
       # skip this cell type if there aren't enough cells
       y = labels[cell_types == cell_type]
       if (mode == 'classification') {
@@ -459,40 +463,98 @@ calculate_auc = function(input,
                              penalty = lr_params$penalty,
                              mode = 'classification') %>%
             set_engine('glmnet', family = family)
+        } else if (classifier == "merf") {
+
+          # --------------------------------------------------
+          # Here we're doing additional pre-processing.
+          # --------------------------------------------------
+
+          if (!("replicate" %in% colnames(meta))) {
+            stop("MERF requires a column named 'replicate' in the metadata")
+          }
+
+          replicates = meta$replicate[subsample_idxs]
+
+          X0_merf = cbind(X0, replicate = replicates)
+
+          # Check that target.label was properly defined, otherwise everything will probably be wrong.
+          if (rf_params$target.label == "0") {
+            stop("MERF requires a target.label to be defined in rf_params")
+          }
+
+          # Add back in labels
+          X0_merf = mutate(X0_merf, label = y0 == rf_params$target.label) # This coerces the labels to be 0/1
+
         } else {
           stop("invalid classifier: ", classifier)
         }
 
         # fit models in cross-validation
-        if (mode == "classification") {
+        if (classifier == "merf") {
+          cv = vfold_cv(X0_merf, v = folds, strata = 'label')
+        } else if (mode == "classification") {
           cv = vfold_cv(X0, v = folds, strata = 'label')
         } else {
           cv = vfold_cv(X0, v = folds)
         }
         withCallingHandlers({
-          folded = cv %>%
-            mutate(
-              recipes = splits %>%
-                map(~ prepper(., recipe = recipe(.$data, label ~ .))),
-              test_data = splits %>% map(analysis),
-              fits = map2(
-                recipes,
-                test_data,
-                ~ fit(
-                  clf,
-                  label ~ .,
-                  data = bake(object = .x, new_data = .y)
+
+          rps = cv$splits %>% map(~ prepper(., recipe = recipe(.$data, label ~ .)))
+          tdat = cv$splits %>% map(analysis)
+          baked_dat = list()
+          for (i in seq(length(cv$splits))) {
+            baked_dat[[i]] = bake(object = rps[[i]], new_data = tdat[[i]])
+            if (classifier != "merf") {
+              fitttt = map2(rps, tdat, ~ fit(clf, label ~ ., data = baked_dat[[i]]))
+            } else {
+
+              cnames = colnames(baked_dat[[i]])
+              cnames_no_label_no_replicates = cnames[-which(cnames == "label" | cnames == "replicate")]
+
+              local_ref = baked_dat[[i]]
+              target = local_ref[, "label"]
+
+              # We need to reconvert everything, because the bake() function seems to undo the conversions.
+              local_ref = apply(local_ref, 2, function(x) as.numeric(as.character(x))) %>% as.data.frame()
+
+              target = local_ref[, "label"] # Make a reference back to the DF
+              X_covar = local_ref[, cnames_no_label_no_replicates]
+
+              fitttt = map2(
+                rps,
+                tdat,
+                ~ MERFranger(
+                  Y = target,
+                  X = X_covar,
+                  random = "(1|replicate)",
+                  data = local_ref,
+                  na.rm = FALSE,
+                  importance = ifelse(is.null(rf_params$importance), "none", rf_params$importance),
+                  mtry = rf_params$mtry,
+                  ntree = rf_params$trees,
+                  min_node_size = rf_params$min_n
                 )
               )
+            }
+          }
+
+          folded = cv %>%
+            mutate(
+              recipes = rps,
+              test_data = tdat,
+              fits = fitttt
             )
         }, warning = function(w) {
           if (grepl("dangerous ground", conditionMessage(w)))
+            invokeRestart("muffleWarning")
+          if (grepl("boundary (singular) fit", conditionMessage(w)))
             invokeRestart("muffleWarning")
         })
 
         # predict on the left-out data
         retrieve_class_preds = function(split, recipe, model) {
           test = bake(recipe, assessment(split))
+
           tbl = tibble(
             true = test$label,
             pred = predict(model, test)$.pred_class,
@@ -502,6 +564,19 @@ calculate_auc = function(input,
             select(-prob)
           return(tbl)
         }
+
+        retrieve_merf_preds = function(split, recipe, model) {
+          test = bake(recipe, assessment(split))
+          tbl = tibble(
+            true = test$label %>% as.numeric() %>% as.factor(),
+            # true = round(!test$label) %>% as.factor(),
+            pred = round(predict(model, test)) %>% as.factor() %>% unname(),
+            .prob_control = (1 - predict(model, test))  %>% unname(),# The probability is just the prediction!
+            .prob_treatment = predict(model, test)  %>% unname()# The probability is just the prediction!
+          )
+          return(tbl)
+        }
+
         retrieve_reg_preds = function(split, recipe, model) {
           test = bake(recipe, assessment(split))
           tbl = tibble(
@@ -517,12 +592,17 @@ calculate_auc = function(input,
               fits
             )
           )
-        if (mode == 'regression') {
+        if (classifier == 'merf') { # Requires a specialised function
           predictions = predictions %>%
-            mutate(pred = pmap(pred, retrieve_reg_preds))
+            mutate(pred = pmap(pred, retrieve_merf_preds))
         } else {
-          predictions = predictions %>%
-            mutate(pred = pmap(pred, retrieve_class_preds))
+          if (mode == 'regression') {
+            predictions = predictions %>%
+              mutate(pred = pmap(pred, retrieve_reg_preds))
+          } else {
+            predictions = predictions %>%
+              mutate(pred = pmap(pred, retrieve_class_preds))
+          }
         }
 
         # evalulate the predictions
@@ -622,6 +702,24 @@ calculate_auc = function(input,
                    subsample_idx = subsample_idx) %>%
             # rearrange columns
             dplyr::select(cell_type, subsample_idx, fold, gene, std_coef)
+        } else if (classifier == "merf") {
+          # We want to rearrange columns, in order of importance
+          if (!is.null(rf_params$importance)) {
+            importance = folded %>%
+              pull(fits) %>%
+              map("Forest") %>%
+              map("variable.importance") %>%
+              map(as.data.frame) %>%
+              map(~ rownames_to_column(., 'gene')) %>%
+              map2_df(1:length(.), ~ mutate(.x, fold = .y)) %>%
+              mutate(cell_type = cell_type,
+                     subsample_idx = subsample_idx) %>%
+              dplyr::rename(importance = ".x[[i]]") # Because engine is ranger, see above
+              # rearrange columns
+              importance %<>% dplyr::select(cell_type, subsample_idx, fold, gene, importance)
+          } else {
+            warning("You did not select feature importance, so it will not be calculated.")
+          }
         }
 
         # rearrange columns
@@ -692,7 +790,7 @@ calculate_auc = function(input,
     n_threads = n_threads,
     classifier = classifier
   )
-  if (classifier == "rf")
+  if (classifier == "rf" || classifier == "merf")
     params$rf_params = rf_params
   if (classifier == "lr")
     params$lr_params = lr_params
