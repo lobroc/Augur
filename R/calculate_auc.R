@@ -498,59 +498,76 @@ calculate_auc = function(input,
         } else {
           cv = vfold_cv(X0, v = folds)
         }
-        withCallingHandlers({
+        # withCallingHandlers({
 
-          rps = cv$splits %>% map(~ prepper(., recipe = recipe(.$data, label ~ .)))
-          tdat = cv$splits %>% map(analysis)
-          baked_dat = list()
-          for (i in seq(length(cv$splits))) {
-            baked_dat[[i]] = bake(object = rps[[i]], new_data = tdat[[i]])
+          fit_wrapper <- function(clf, form, data, rf_params) {
             if (classifier != "merf") {
-              fitttt = map2(rps, tdat, ~ fit(clf, label ~ ., data = baked_dat[[i]]))
+              return (
+                fit(
+                  clf,
+                  form,
+                  data = data
+                )
+              )
             } else {
-
-              cnames = colnames(baked_dat[[i]])
-              cnames_no_label_no_replicates = cnames[-which(cnames == "label" | cnames == "replicate")]
-
-              local_ref = baked_dat[[i]]
-              target = local_ref[, "label"]
-
-              # We need to reconvert everything, because the bake() function seems to undo the conversions.
-              local_ref = apply(local_ref, 2, function(x) as.numeric(as.character(x))) %>% as.data.frame()
-
-              target = local_ref[, "label"] # Make a reference back to the DF
-              X_covar = local_ref[, cnames_no_label_no_replicates]
-
-              fitttt = map2(
-                rps,
-                tdat,
-                ~ MERFranger(
-                  Y = target,
-                  X = X_covar,
-                  random = "(1|replicate)",
-                  data = local_ref,
-                  na.rm = FALSE,
-                  importance = ifelse(is.null(rf_params$importance), "none", rf_params$importance),
-                  mtry = rf_params$mtry,
-                  ntree = rf_params$trees,
-                  min_node_size = rf_params$min_n
+              return (
+                merf_applyer(
+                  data = data,
+                  rf_params = rf_params
                 )
               )
             }
           }
 
+          merf_applyer <- function(data, rf_params) {
+            cnames = colnames(data)
+            cnames_no_label_no_replicates = cnames[-which(cnames == "label" | cnames == "replicate")]
+
+            local_ref = data
+            target = local_ref[, "label"]
+
+            # We need to reconvert everything, because the bake() function seems to undo the conversions.
+            local_ref = apply(local_ref, 2, function(x) as.numeric(as.character(x))) %>% as.data.frame()
+
+            target = local_ref[, "label"] # Make a reference back to the DF
+            X_covar = local_ref[, cnames_no_label_no_replicates]
+
+            result = MERFranger(
+              Y = target,
+              X = X_covar,
+              random = "(1|replicate)",
+              data = local_ref,
+              na.rm = FALSE,
+              importance = ifelse(is.null(rf_params$importance), "none", rf_params$importance),
+              mtry = rf_params$mtry,
+              num.trees = rf_params$trees,
+              min.node.size = rf_params$min_n,
+              num.threads = ifelse(is.null(rf_params$num.threads), 1, rf_params$num.threads)
+            )
+
+            return (result)
+          }
+
           folded = cv %>%
             mutate(
-              recipes = rps,
-              test_data = tdat,
-              fits = fitttt
+              recipes = splits %>%
+                map(~ prepper(., recipe = recipe(.$data, label ~ .))),
+              test_data = splits %>% map(analysis),
+              fits = map2(
+                recipes,
+                test_data,
+                ~ fit_wrapper(
+                  clf,
+                  label ~ .,
+                  data = bake(object = .x, new_data = .y),
+                  rf_params = rf_params
+                )
+              )
             )
-        }, warning = function(w) {
-          if (grepl("dangerous ground", conditionMessage(w)))
-            invokeRestart("muffleWarning")
-          if (grepl("boundary (singular) fit", conditionMessage(w)))
-            invokeRestart("muffleWarning")
-        })
+        # }, warning = function(w) {
+        #   if (grepl("dangerous ground", conditionMessage(w)))
+        #     invokeRestart("muffleWarning")
+        # })
 
         # predict on the left-out data
         retrieve_class_preds = function(split, recipe, model) {
@@ -569,9 +586,9 @@ calculate_auc = function(input,
         retrieve_merf_preds = function(split, recipe, model) {
           test = bake(recipe, assessment(split))
           tbl = tibble(
-            true = test$label %>% as.numeric() %>% as.factor(),
+            true = test$label %>% as.numeric() %>% factor(., levels = c(0, 1), labels = c("0", "1")),
             # true = round(!test$label) %>% as.factor(),
-            pred = round(predict(model, test)) %>% as.factor() %>% unname(),
+            pred = round(predict(model, test)) %>% factor(., levels = c(0, 1), labels = c("0", "1")) %>% unname(),
             .prob_control = (1 - predict(model, test))  %>% unname(),# The probability is just the prediction!
             .prob_treatment = predict(model, test)  %>% unname()# The probability is just the prediction!
           )
@@ -678,9 +695,9 @@ calculate_auc = function(input,
             map2_df(1:length(.), ~ mutate(.x, fold = .y)) %>%
             mutate(cell_type = cell_type,
                    subsample_idx = subsample_idx) %>%
-            dplyr::rename(importance = impval_name)
+            dplyr::rename(importance = impval_name) %>%
             # rearrange columns
-            importance %<>% dplyr::select(cell_type, subsample_idx, fold, gene, importance)
+            dplyr::select(cell_type, subsample_idx, fold, gene, importance)
         } else if (classifier == "lr") {
           # standardized coefficients with Agresti method
           # cf. https://think-lab.github.io/d/205/#3
