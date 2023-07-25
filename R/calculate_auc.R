@@ -526,9 +526,12 @@ calculate_auc = function(input,
             local_ref = data
             local_ref[, "label"] %<>% unlist() %>% as.numeric()
             target = local_ref[, "label"]
+            replicate_backup = local_ref[, "replicate"]
 
             # We need to reconvert everything, because the bake() function seems to undo the conversions.
             local_ref = apply(local_ref, 2, function(x) as.integer(x)) %>% as.data.frame()
+
+            local_ref[, "replicate"] = replicate_backup # Reapply, otherwise might be NA
 
             target = local_ref[, "label"] # Make a reference back to the DF
             X_covar = local_ref[, cnames_no_label_no_replicates]
