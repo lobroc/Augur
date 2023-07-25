@@ -498,7 +498,7 @@ calculate_auc = function(input,
         } else {
           cv = vfold_cv(X0, v = folds)
         }
-        # withCallingHandlers({
+        withCallingHandlers({
 
           fit_wrapper <- function(clf, form, data, rf_params) {
             if (classifier != "merf") {
@@ -524,10 +524,11 @@ calculate_auc = function(input,
             cnames_no_label_no_replicates = cnames[-which(cnames == "label" | cnames == "replicate")]
 
             local_ref = data
+            local_ref[, "label"] %<>% unlist() %>% as.numeric()
             target = local_ref[, "label"]
 
             # We need to reconvert everything, because the bake() function seems to undo the conversions.
-            local_ref = apply(local_ref, 2, function(x) as.numeric(as.character(x))) %>% as.data.frame()
+            local_ref = apply(local_ref, 2, function(x) as.integer(x)) %>% as.data.frame()
 
             target = local_ref[, "label"] # Make a reference back to the DF
             X_covar = local_ref[, cnames_no_label_no_replicates]
@@ -564,10 +565,10 @@ calculate_auc = function(input,
                 )
               )
             )
-        # }, warning = function(w) {
-        #   if (grepl("dangerous ground", conditionMessage(w)))
-        #     invokeRestart("muffleWarning")
-        # })
+        }, warning = function(w) {
+          if (grepl("dangerous ground", conditionMessage(w)))
+            invokeRestart("muffleWarning")
+        })
 
         # predict on the left-out data
         retrieve_class_preds = function(split, recipe, model) {
