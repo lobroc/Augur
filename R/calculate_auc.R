@@ -543,7 +543,8 @@ calculate_auc = function(input,
               mtry = rf_params$mtry,
               num.trees = rf_params$trees,
               min.node.size = rf_params$min_n,
-              num.threads = ifelse(is.null(rf_params$num.threads), 1, rf_params$num.threads)
+              num.threads = ifelse(is.null(rf_params$num.threads), 1, rf_params$num.threads),
+              seed = 1 # For reproducibility
             )
 
             return (result)
