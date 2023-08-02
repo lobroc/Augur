@@ -145,8 +145,7 @@ calculate_auc = function(input,
                          rf_params = list(trees = 100,
                                           mtry = 2,
                                           min_n = NULL,
-                                          importance = 'accuracy',
-                                          target.label = '0'),
+                                          importance = 'accuracy'),
                          # logistic regression parameters
                          lr_params = list(mixture = 1, penalty = 'auto')
 ) {
@@ -484,7 +483,8 @@ calculate_auc = function(input,
           }
 
           # Add back in labels
-          X0_merf = mutate(X0_merf, label = y0 == rf_params$target.label) # This coerces the labels to be 0/1
+          X0_merf = mutate(X0_merf, label = y0 == levels(y0)[[2]]) # This coerces the labels to be 0/1
+          message("Setting target label for MERF to be: ", levels(y0)[[2]])
 
         } else {
           stop("invalid classifier: ", classifier)
@@ -521,7 +521,7 @@ calculate_auc = function(input,
 
           merf_applyer <- function(data, rf_params) {
             cnames = colnames(data)
-            cnames_no_label_no_replicates = cnames[-which(cnames == "label" | cnames == "replicate")]
+            cnames_covar = cnames[-which(cnames == "label" | cnames == "replicate")]
 
             local_ref = data
             local_ref[, "label"] %<>% unlist() %>% as.numeric()
@@ -534,7 +534,7 @@ calculate_auc = function(input,
             local_ref[, "replicate"] = replicate_backup # Reapply, otherwise might be NA
 
             target = local_ref[, "label"] # Make a reference back to the DF
-            X_covar = local_ref[, cnames_no_label_no_replicates]
+            X_covar = local_ref[, cnames_covar]
 
             result = MERFranger(
               Y = target,
