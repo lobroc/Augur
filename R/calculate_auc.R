@@ -477,10 +477,6 @@ calculate_auc = function(input,
 
           X0_merf = cbind(X0, replicate = replicates)
 
-          # Check that target.label was properly defined, otherwise everything will probably be wrong.
-          if (rf_params$target.label == "0") {
-            stop("MERF requires a target.label to be defined in rf_params")
-          }
 
           # Add back in labels
           X0_merf = mutate(X0_merf, label = y0 == levels(y0)[[2]]) # This coerces the labels to be 0/1
