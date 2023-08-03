@@ -525,7 +525,7 @@ calculate_auc = function(input,
 
           # Add back in labels
           X0_merf = mutate(X0_merf, label = y0 == levels(y0)[[2]]) # This coerces the labels to be 0/1
-          message("Setting target label for MERF to be: ", levels(y0)[[2]])
+          warning("Setting target label for MERF to be: ", levels(y0)[[2]])
 
         } else {
           stop("invalid classifier: ", classifier)
