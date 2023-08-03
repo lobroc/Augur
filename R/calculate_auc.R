@@ -152,6 +152,13 @@ calculate_auc = function(input,
   # check arguments
   classifier = match.arg(classifier)
   augur_mode = match.arg(augur_mode)
+
+  if (classifier == "merf" && !(is.null(rf_params$importance)) && rf_params$importance == 'accuracy') {
+    warning("MERF does not support accuracy-based feature importance; ",
+            "setting importance to \"permutation\"")
+    rf_params$importance = 'permutation'
+  }
+
   # check number of folds/subsample size are compatible (n > 1 in every fold)
   if (n_subsamples > 1 & subsample_size / folds < 2) {
     stop("subsample_size / n_folds must be greater than or equal to 2")
@@ -762,18 +769,20 @@ calculate_auc = function(input,
         } else if (classifier == "merf") {
           # We want to rearrange columns, in order of importance
           if (!is.null(rf_params$importance)) {
-            importance = folded %>%
-              pull(fits) %>%
-              map("Forest") %>%
-              map("variable.importance") %>%
-              map(as.data.frame) %>%
-              map(~ rownames_to_column(., 'gene')) %>%
-              map2_df(1:length(.), ~ mutate(.x, fold = .y)) %>%
-              mutate(cell_type = cell_type,
-                     subsample_idx = subsample_idx) %>%
-              dplyr::rename(importance = ".x[[i]]") # Because engine is ranger, see above
-              # rearrange columns
-              importance %<>% dplyr::select(cell_type, subsample_idx, fold, gene, importance)
+            if (rf_params$importance != "none") { # Don't need warning message if user has deliberately selected none
+              importance = folded %>%
+                pull(fits) %>%
+                map("Forest") %>%
+                map("variable.importance") %>%
+                map(as.data.frame) %>%
+                map(~ rownames_to_column(., 'gene')) %>%
+                map2_df(1:length(.), ~ mutate(.x, fold = .y)) %>%
+                mutate(cell_type = cell_type,
+                      subsample_idx = subsample_idx) %>%
+                dplyr::rename(importance = ".x[[i]]") # Because engine is ranger, see above
+                # rearrange columns
+                importance %<>% dplyr::select(cell_type, subsample_idx, fold, gene, importance)
+            }
           } else {
             warning("You did not select feature importance, so it will not be calculated.")
           }
@@ -786,7 +795,9 @@ calculate_auc = function(input,
 
         # add to results
         tmp_results %<>% bind_rows(result)
-        tmp_importances %<>% bind_rows(importance)
+        if (!is.null(rf_params$importance) && rf_params$importance != "none") {
+        	tmp_importances %<>% bind_rows(importance)
+        }
       }
       list(results = tmp_results, importances = tmp_importances)
     }
