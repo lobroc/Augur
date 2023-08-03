@@ -401,11 +401,57 @@ calculate_auc = function(input,
               do(sample_n(., subsample_size)) %>%
               pull(position)
           } else {
-            subsample_idxs = data.frame(label = y,
+
+            if (classifier == "merf") {
+              if (!("replicate" %in% colnames(meta))) {
+                stop("MERF requires a column named 'replicate' in the metadata")
+              }
+
+              replicates = as.factor(meta$replicate)[cell_types == cell_type]
+
+              reps_prop_false = table(replicates[which(y == levels(y)[[1]])]) %>% as.data.frame()
+              reps_prop_true = table(replicates[which(y == levels(y)[[2]])]) %>% as.data.frame()
+              
+              if (any(reps_prop_false["Freq"] / sum(reps_prop_false["Freq"]) > 0.9) ||
+                  any(reps_prop_true["Freq"] / sum(reps_prop_true["Freq"]) > 0.9)) { # If any replicates take up > 90% of a label for this cell type, skip it.
+                warning("skipping cell type ", cell_type,
+                        ": a single replicate takes up > 90% of a label's cells")
+                return(list())
+              } else {
+                rm(reps_prop_true) # Clean up
+                rm(reps_prop_false)
+              }
+              
+              tries = 0
+              repeat {
+                tries = tries + 1
+                subsample_idxs = data.frame(label = y,
+                                          position = seq_along(y)) %>%
+                group_by(label) %>%
+                do(sample_n(., subsample_size)) %>%
+                pull(position)
+
+                if (length(unique(replicates[subsample_idxs][which (y[subsample_idxs] == levels(y)[[1]])])) > 1 &&
+                    length(unique(replicates[subsample_idxs][which (y[subsample_idxs] == levels(y)[[2]])])) > 1) {
+                  break # We're done if there are more than 2 replicates in each label type!
+                }
+
+                if (tries > 30) {
+                  warning("skipping cell type ", cell_type,
+                          ": could not find a subsample with > 1 replicate in each label type in 30 trials.")
+                  return(list())
+                }
+              }
+              rm(tries) # Clean up
+
+            } else {
+              subsample_idxs = data.frame(label = y,
                                         position = seq_along(y)) %>%
               group_by(label) %>%
               do(sample_n(., subsample_size)) %>%
               pull(position)
+            }
+
           }
           y0 = y[subsample_idxs]
           # randomly select features
@@ -468,15 +514,7 @@ calculate_auc = function(input,
           # --------------------------------------------------
           # Here we're doing additional pre-processing.
           # --------------------------------------------------
-
-          if (!("replicate" %in% colnames(meta))) {
-            stop("MERF requires a column named 'replicate' in the metadata")
-          }
-
-          replicates = meta$replicate[subsample_idxs]
-
-          X0_merf = cbind(X0, replicate = replicates)
-
+          X0_merf = cbind(X0, replicate = replicates[subsample_idxs])
 
           # Add back in labels
           X0_merf = mutate(X0_merf, label = y0 == levels(y0)[[2]]) # This coerces the labels to be 0/1
