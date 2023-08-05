@@ -866,10 +866,16 @@ calculate_auc = function(input,
     X = expr,
     y = labels,
     cell_types = cell_types,
+    replicate = NA,
     parameters = params,
     results = results,
     feature_importance = feature_importances
   )
+
+  if (!is.null(meta$replicate)) {
+    obj$replicate = meta$replicate
+  }
+
   if (mode == "classification") {
     obj$AUC = AUCs
   } else if (mode == "regression") {
