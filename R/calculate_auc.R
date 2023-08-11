@@ -570,7 +570,7 @@ calculate_auc = function(input,
             replicate_backup = local_ref[, "replicate"]
 
             # We need to reconvert everything, because the bake() function seems to undo the conversions.
-            local_ref = apply(local_ref, 2, function(x) as.integer(x)) %>% as.data.frame()
+            local_ref = suppressWarnings(apply(local_ref, 2, function(x) as.integer(x))) %>% as.data.frame() # Remove warnings since it'll say NAs generated from factors. I know this.
 
             local_ref[, "replicate"] = replicate_backup # Reapply, otherwise might be NA
 
@@ -580,7 +580,7 @@ calculate_auc = function(input,
             result = MERFranger(
               Y = target,
               X = X_covar,
-              random = "(1|replicate)",
+              random = "(1|label/replicate)",
               data = local_ref,
               na.rm = FALSE,
               importance = ifelse(is.null(rf_params$importance), "none", rf_params$importance),
@@ -630,13 +630,14 @@ calculate_auc = function(input,
         }
 
         retrieve_merf_preds = function(split, recipe, model) {
+          trunc <- function(x, ..., prec = 0) base::trunc(x * 10^prec, ...) / 10^prec;
           test = bake(recipe, assessment(split))
           tbl = tibble(
             true = test$label %>% as.numeric() %>% factor(., levels = c(0, 1), labels = c("0", "1")),
             # true = round(!test$label) %>% as.factor(),
             pred = round(predict(model, test)) %>% factor(., levels = c(0, 1), labels = c("0", "1")) %>% unname(),
-            .prob_control = (1 - predict(model, test))  %>% unname(),# The probability is just the prediction!
-            .prob_treatment = predict(model, test)  %>% unname()# The probability is just the prediction!
+            .prob_control = (1 - trunc(predict(model, test), prec = 3))  %>% unname(),# The probability is just the prediction!
+            .prob_treatment = trunc(predict(model, test), prec = 3)  %>% unname()# The probability is just the prediction!
           )
           return(tbl)
         }
