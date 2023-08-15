@@ -577,19 +577,23 @@ calculate_auc = function(input,
             target = local_ref[, "label"] # Make a reference back to the DF
             X_covar = local_ref[, cnames_covar]
 
-            result = MERFranger(
-              Y = target,
-              X = X_covar,
-              random = "(1|label/replicate)",
-              data = local_ref,
-              na.rm = FALSE,
-              importance = ifelse(is.null(rf_params$importance), "none", rf_params$importance),
-              mtry = rf_params$mtry,
-              num.trees = rf_params$trees,
-              min.node.size = rf_params$min_n,
-              num.threads = ifelse(is.null(rf_params$num.threads), 1, rf_params$num.threads),
-              seed = 1 # For reproducibility
-            )
+            formul = as.formula(paste("target ~ -1", paste(cnames_covar, collapse = " + "), "(1 | label / replicate)", sep = " + "))
+
+            result = lmer(formul, data = local_ref, REML = FALSE)
+
+            # result = MERFranger(
+            #   Y = target,
+            #   X = X_covar,
+            #   random = "(1|label/replicate)",
+            #   data = local_ref,
+            #   na.rm = FALSE,
+            #   importance = ifelse(is.null(rf_params$importance), "none", rf_params$importance),
+            #   mtry = rf_params$mtry,
+            #   num.trees = rf_params$trees,
+            #   min.node.size = rf_params$min_n,
+            #   num.threads = ifelse(is.null(rf_params$num.threads), 1, rf_params$num.threads),
+            #   seed = 1 # For reproducibility
+            # )
 
             return (result)
           }
@@ -631,13 +635,15 @@ calculate_auc = function(input,
 
         retrieve_merf_preds = function(split, recipe, model) {
           trunc <- function(x, ..., prec = 0) base::trunc(x * 10^prec, ...) / 10^prec;
+          norma <- function(x) (x - min(x)) / (max(x) - min(x));
           test = bake(recipe, assessment(split))
+          preded = predict(model, test, allow.new.levels = TRUE)
           tbl = tibble(
             true = test$label %>% as.numeric() %>% factor(., levels = c(0, 1), labels = c("0", "1")),
             # true = round(!test$label) %>% as.factor(),
-            pred = round(predict(model, test)) %>% factor(., levels = c(0, 1), labels = c("0", "1")) %>% unname(),
-            .prob_control = (1 - trunc(predict(model, test), prec = 3))  %>% unname(),# The probability is just the prediction!
-            .prob_treatment = trunc(predict(model, test), prec = 3)  %>% unname()# The probability is just the prediction!
+            pred = (preded > 0.5) %>% as.numeric() %>% factor(., levels = c(0, 1), labels = c("0", "1")) %>% unname(),
+            .prob_control = (1 - preded %>% norma()) %>% unname(),# The probability is just the prediction!
+            .prob_treatment = preded %>% norma() %>% unname()# The probability is just the prediction!
           )
           return(tbl)
         }
@@ -769,24 +775,24 @@ calculate_auc = function(input,
             dplyr::select(cell_type, subsample_idx, fold, gene, std_coef)
         } else if (classifier == "merf") {
           # We want to rearrange columns, in order of importance
-          if (!is.null(rf_params$importance)) {
-            if (rf_params$importance != "none") { # Don't need warning message if user has deliberately selected none
-              importance = folded %>%
-                pull(fits) %>%
-                map("Forest") %>%
-                map("variable.importance") %>%
-                map(as.data.frame) %>%
-                map(~ rownames_to_column(., 'gene')) %>%
-                map2_df(1:length(.), ~ mutate(.x, fold = .y)) %>%
-                mutate(cell_type = cell_type,
-                      subsample_idx = subsample_idx) %>%
-                dplyr::rename(importance = ".x[[i]]") # Because engine is ranger, see above
-                # rearrange columns
-                importance %<>% dplyr::select(cell_type, subsample_idx, fold, gene, importance)
-            }
-          } else {
-            warning("You did not select feature importance, so it will not be calculated.")
-          }
+          # if (!is.null(rf_params$importance)) {
+          #   if (rf_params$importance != "none") { # Don't need warning message if user has deliberately selected none
+          #     importance = folded %>%
+          #       pull(fits) %>%
+          #       map("Forest") %>%
+          #       map("variable.importance") %>%
+          #       map(as.data.frame) %>%
+          #       map(~ rownames_to_column(., 'gene')) %>%
+          #       map2_df(1:length(.), ~ mutate(.x, fold = .y)) %>%
+          #       mutate(cell_type = cell_type,
+          #             subsample_idx = subsample_idx) %>%
+          #       dplyr::rename(importance = ".x[[i]]") # Because engine is ranger, see above
+          #       # rearrange columns
+          #       importance %<>% dplyr::select(cell_type, subsample_idx, fold, gene, importance)
+          #   }
+          # } else {
+          #   warning("You did not select feature importance, so it will not be calculated.")
+          # }
         }
 
         # rearrange columns
