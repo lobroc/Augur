@@ -124,7 +124,7 @@
 #' @importFrom parallel mclapply
 #' @importFrom tester is_numeric_matrix is_numeric_dataframe
 #' @import Matrix
-#' @importFrom SAEforest MERFranger
+#' @importFrom lme4 lmer
 #'
 #' @export
 calculate_auc = function(input,
