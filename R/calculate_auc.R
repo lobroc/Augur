@@ -147,7 +147,8 @@ calculate_auc = function(input,
                                           min_n = NULL,
                                           importance = 'accuracy'),
                          # logistic regression parameters
-                         lr_params = list(mixture = 1, penalty = 'auto')
+                         lr_params = list(mixture = 1, penalty = 'auto'),
+                         use_glmer = T
 ) {
   # check arguments
   classifier = match.arg(classifier)
@@ -579,21 +580,23 @@ calculate_auc = function(input,
 
             formul = as.formula(paste("target ~ -1", paste(cnames_covar, collapse = " + "), "(1 | label / replicate)", sep = " + "))
 
-            result = glmer(formul, data = local_ref, family=binomial)
-
-            # result = MERFranger(
-            #   Y = target,
-            #   X = X_covar,
-            #   random = "(1|label/replicate)",
-            #   data = local_ref,
-            #   na.rm = FALSE,
-            #   importance = ifelse(is.null(rf_params$importance), "none", rf_params$importance),
-            #   mtry = rf_params$mtry,
-            #   num.trees = rf_params$trees,
-            #   min.node.size = rf_params$min_n,
-            #   num.threads = ifelse(is.null(rf_params$num.threads), 1, rf_params$num.threads),
-            #   seed = 1 # For reproducibility
-            # )
+            if (use_glmer) {
+              result = glmer(formul, data = local_ref, family=binomial)
+            } else {
+              result = MERFranger(
+                Y = target,
+                X = X_covar,
+                random = "(1|label/replicate)",
+                data = local_ref,
+                na.rm = FALSE,
+                importance = ifelse(is.null(rf_params$importance), "none", rf_params$importance),
+                mtry = rf_params$mtry,
+                num.trees = rf_params$trees,
+                min.node.size = rf_params$min_n,
+                num.threads = ifelse(is.null(rf_params$num.threads), 1, rf_params$num.threads),
+                seed = 1 # For reproducibility
+              )
+            }
 
             return (result)
           }
