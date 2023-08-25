@@ -125,6 +125,7 @@
 #' @importFrom tester is_numeric_matrix is_numeric_dataframe
 #' @import Matrix
 #' @importFrom lme4 glmer
+#' @importFrom SAEforest MERFranger
 #'
 #' @export
 calculate_auc = function(input,
@@ -318,6 +319,11 @@ calculate_auc = function(input,
       labels %<>% as.factor()
     }
   }
+
+  placeholder_names = paste0("Gene", seq_along(rownames(expr)))
+  gene_name_mapping = as.data.frame(list("original_names"=rownames(expr), "placeholder_names"=placeholder_names))
+  rownames(expr) = placeholder_names
+  rm(placeholder_names) # Clean up
 
   # check if showing progress or not
   if (show_progress == T) {
@@ -640,7 +646,11 @@ calculate_auc = function(input,
           trunc <- function(x, ..., prec = 0) base::trunc(x * 10^prec, ...) / 10^prec;
           norma <- function(x) (x - min(x)) / (max(x) - min(x));
           test = bake(recipe, assessment(split))
-          preded = predict(model, test, allow.new.levels = TRUE)
+          if (use_glmer) {
+            preded = predict(model, test, allow.new.levels = TRUE)
+          } else {
+            preded = predict(model, test)
+          }
           tbl = tibble(
             true = test$label %>% as.numeric() %>% factor(., levels = c(0, 1), labels = c("0", "1")),
             # true = round(!test$label) %>% as.factor(),
@@ -877,6 +887,7 @@ calculate_auc = function(input,
     y = labels,
     cell_types = cell_types,
     replicate = NA,
+    gene_name_mapping = gene_name_mapping,
     parameters = params,
     results = results,
     feature_importance = feature_importances
