@@ -124,7 +124,7 @@
 #' @importFrom parallel mclapply
 #' @importFrom tester is_numeric_matrix is_numeric_dataframe
 #' @import Matrix
-#' @importFrom lme4 lmer
+#' @importFrom lme4 glmer
 #'
 #' @export
 calculate_auc = function(input,
@@ -579,7 +579,7 @@ calculate_auc = function(input,
 
             formul = as.formula(paste("target ~ -1", paste(cnames_covar, collapse = " + "), "(1 | label / replicate)", sep = " + "))
 
-            result = lmer(formul, data = local_ref, REML = FALSE)
+            result = glmer(formul, data = local_ref, family=binomial)
 
             # result = MERFranger(
             #   Y = target,
