@@ -149,6 +149,9 @@ calculate_auc = function(input,
                          # logistic regression parameters
                          lr_params = list(mixture = 1, penalty = 'auto')
 ) {
+  # Make a holder dataframe for timings. This is a global variable!
+  timings <- list("label" = "Start", "time" = Sys.time(), "cell_type" = NA, "inner_iteration" = NA) %>% as_tibble()
+
   # check arguments
   classifier = match.arg(classifier)
   augur_mode = match.arg(augur_mode)
@@ -231,6 +234,8 @@ calculate_auc = function(input,
     cell_types = meta[[cell_type_col]]
     labels = meta[[label_col]]
   }
+
+  timings %<>% bind_rows(list("label" = "Extraction of data done", "time" = Sys.time(), "cell_type" = NA, "inner_iteration" = NA))
 
   # check dimensions are non-zero
   if (length(dim(expr)) != 2 || !all(dim(expr) > 0)) {
@@ -318,6 +323,9 @@ calculate_auc = function(input,
     apply_fun = mclapply
   }
 
+  # apply_fun = lapply
+
+
   # check augur mode
   if (augur_mode == 'velocity') {
     # reset feature selection
@@ -331,9 +339,15 @@ calculate_auc = function(input,
     n_subsamples = 500
   }
     
+  timings %<>% bind_rows(list("label" = "Input checks done", "time" = Sys.time(), "cell_type" = NA, "inner_iteration" = NA))
+
   # iterate over cell type clusters
   res = apply_fun(unique(cell_types),
-    mc.cores = n_threads, function(cell_type) {
+    mc.cores = n_threads,
+    function(cell_type) {
+      local_timings = NULL
+
+      local_timings %<>% bind_rows(list("label" = "Starting cell type", "time" = Sys.time(), "cell_type" = cell_type, "inner_iteration" = NA))
       # skip this cell type if there aren't enough cells
       y = labels[cell_types == cell_type]
       if (mode == 'classification') {
@@ -354,6 +368,8 @@ calculate_auc = function(input,
       # subset the entire expression matrix to this cell type
       X = expr[, cell_types == cell_type]
 
+      local_timings %<>% bind_rows(list("label" = "Subsetted cell type", "time" = Sys.time(), "cell_type" = cell_type, "inner_iteration" = NA))
+
       # select features by variance
       min_features_for_selection = 1000
       if (nrow(X) >= min_features_for_selection) {
@@ -365,9 +381,14 @@ calculate_auc = function(input,
       tmp_importances = data.frame()
 
       n_iter = ifelse(n_subsamples < 1, 1, n_subsamples)
+
+      local_timings %<>% bind_rows(list("label" = "Select variance done", "time" = Sys.time(), "cell_type" = cell_type, "inner_iteration" = NA))
+
       for (subsample_idx in seq_len(n_iter)) {
         # seed RNG for reproducibility
         set.seed(subsample_idx)
+
+        local_timings %<>% bind_rows(list("label" = "Starting subsample", "time" = Sys.time(), "cell_type" = cell_type, "inner_iteration" = subsample_idx))
 
         # optionally, permute the labels
         if (augur_mode == 'permute') {
@@ -425,6 +446,8 @@ calculate_auc = function(input,
             mutate(label = y0)
         }
 
+        local_timings %<>% bind_rows(list("label" = "Subsample done", "time" = Sys.time(), "cell_type" = cell_type, "inner_iteration" = subsample_idx))
+
         # set up model
         if (classifier == "lr") {
           family = ifelse(multiclass, 'multinomial', 'binomial')
@@ -461,6 +484,8 @@ calculate_auc = function(input,
         } else {
           cv = vfold_cv(X0, v = folds)
         }
+
+        local_timings %<>% bind_rows(list("label" = "Setup classifier (nothing to do here)", "time" = Sys.time(), "cell_type" = cell_type, "inner_iteration" = subsample_idx))
 
         seeded_rf <- function(form, data) {
           target_indexes = which(colnames(data) == form[[2]]) # form[[2]] gets the lhs vars of the formula!
@@ -506,6 +531,8 @@ calculate_auc = function(input,
             invokeRestart("muffleWarning")
         })
 
+        local_timings %<>% bind_rows(list("label" = "Fitting done", "time" = Sys.time(), "cell_type" = cell_type, "inner_iteration" = subsample_idx))
+
         # predict on the left-out data
         retrieve_class_preds = function(split, recipe, model) {
           test = bake(recipe, assessment(split))
@@ -537,6 +564,9 @@ calculate_auc = function(input,
               fits
             )
           )
+
+        local_timings %<>% bind_rows(list("label" = "Prediction done", "time" = Sys.time(), "cell_type" = cell_type, "inner_iteration" = subsample_idx))
+
         if (mode == 'regression') {
           predictions = predictions %>%
             mutate(pred = pmap(pred, retrieve_reg_preds))
@@ -579,12 +609,16 @@ calculate_auc = function(input,
           ) %>%
           extract2('metrics')
 
+        local_timings %<>% bind_rows(list("label" = "Metric calculation done", "time" = Sys.time(), "cell_type" = cell_type, "inner_iteration" = subsample_idx))
+
         # clean up the results
         result = eval %>%
           map2_df(., row.names(folded), ~ mutate(.x, fold = .y))
           names(result) %<>% gsub("\\.", "", .)
         result %<>% mutate(cell_type = cell_type,
                     subsample_idx = subsample_idx)
+        
+        local_timings %<>% bind_rows(list("label" = "Result cleaning done", "time" = Sys.time(), "cell_type" = cell_type, "inner_iteration" = subsample_idx))
 
         # also calculate feature importance
         importance = NULL
@@ -644,6 +678,8 @@ calculate_auc = function(input,
             dplyr::select(cell_type, subsample_idx, fold, gene, std_coef)
         }
 
+        local_timings %<>% bind_rows(list("label" = "Importance calculation done", "time" = Sys.time(), "cell_type" = cell_type, "inner_iteration" = subsample_idx))
+
         # rearrange columns
         result %<>%
           dplyr::select(cell_type, subsample_idx, fold, metric, estimator,
@@ -652,10 +688,15 @@ calculate_auc = function(input,
         # add to results
         tmp_results %<>% bind_rows(result)
         tmp_importances %<>% bind_rows(importance)
+
+        local_timings %<>% bind_rows(list("label" = "Adding to results done", "time" = Sys.time(), "cell_type" = cell_type, "inner_iteration" = subsample_idx))
       }
-      list(results = tmp_results, importances = tmp_importances)
+      list(results = tmp_results, importances = tmp_importances, local_timings = local_timings)
     }
   )
+
+  timings %<>% bind_rows(list("label" = "Cell type iteration done", "time" = Sys.time(), "cell_type" = NA, "inner_iteration" = NA))
+  timings %<>% bind_rows(res %>% map("local_timings"))
 
   # ignore warnings from yardstick
   if (any(map_lgl(res, ~ "warning" %in% class(.)))) {
@@ -693,6 +734,8 @@ calculate_auc = function(input,
       arrange(desc(ccc))
   }
   
+  timings %<>% bind_rows(list("label" = "Cleaning up AUCs done", "time" = Sys.time(), "cell_type" = NA, "inner_iteration" = NA))
+
   # clean up results across lapply folds
   feature_importances = res %>%
     map("importances") %>%
@@ -729,6 +772,9 @@ calculate_auc = function(input,
   } else if (mode == "regression") {
     obj$CCC = CCCs
   }
+
+  timings %<>% bind_rows(list("label" = "Augur object done", "time" = Sys.time(), "cell_type" = NA, "inner_iteration" = NA))
+  saveRDS(timings, "~/git/augur-merf-analysis/timings-mt.rds")
 
   return(obj)
 }
