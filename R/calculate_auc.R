@@ -364,6 +364,101 @@ calculate_auc = function(input,
       tmp_results = data.frame()
       tmp_importances = data.frame()
 
+      # Pre-define functions used within loop
+      seeded_rf <- function(form, data) {
+        target_indexes = which(colnames(data) == form[[2]]) # form[[2]] gets the lhs vars of the formula!
+
+        y_var = data[, target_indexes] %>% t() %>% as.factor() # This retrieves all columns corresponding to lhs vars
+        x_var = data[, -target_indexes] # This retrieves all columns which are not in lhs vars (equivalent to '.')
+
+        # Additional, small amounts of preprocessing were required, as you can see above.
+        original_seed <- .Random.seed # Save the state of the random seed
+        set.seed(1) # We have to do this in order to have similar behaviour to parsnip.
+
+        forest <- randomForest(
+          y = y_var,
+          x = x_var,
+          importance = TRUE,
+          localImp = TRUE,
+          ntree = rf_params$trees,
+          mtry = rf_params$mtry,
+          min_n = rf_params$min_n,
+          type = mode
+        )
+        .Random.seed <- original_seed # Restore random seed state
+        return (forest)
+      }
+
+      # predict on the left-out data
+      retrieve_class_preds = function(split, recipe, model) {
+        test = bake(recipe, assessment(split))
+        tbl = tibble(
+          true = test$label,
+          pred = predict(model, test),
+          prob = predict(model, test, type = 'prob')) %>%
+          # convert prob from nested df to columns
+          cbind(.$prob) %>%
+          select(-prob)
+        
+        # Restore output syntax to be the exact same as that of parsnip
+        colnames(tbl)[levels(test$label) == colnames(tbl)] %<>% paste0(".pred_", .)
+        return(tbl)
+      }
+      retrieve_reg_preds = function(split, recipe, model) {
+        test = bake(recipe, assessment(split))
+        tbl = tibble(
+          true = test$label,
+          pred = predict(model, test)$.pred)
+        return(tbl)
+      }
+
+      # evalulate the predictions
+      if (mode == 'regression') {
+        multi_metric = metric_set(ccc, huber_loss_pseudo, huber_loss,
+          mae, mape, mase, rpd, rpiq, rsq_trad, rsq, smape, rmse)
+      } else {
+        multi_metric = metric_set(accuracy, precision, recall, sens,
+                                  spec, npv, ppv, roc_auc)
+      }
+
+      prob_select = 3
+      if (mode == "classification") {
+        estimator = ifelse(multiclass, "macro", "binary")
+        if (multiclass)
+          prob_select = seq(3, 3 + n_distinct(labels) - 1)
+        metric_fun = function(x)
+          multi_metric(x,
+                        truth = true,
+                        estimate = pred,
+                        prob_select,
+                        estimator = estimator)
+      } else {
+        metric_fun = function(x)
+          multi_metric(x,
+                        truth = true,
+                        estimate = pred,
+                        prob_select)
+      }
+
+      importance_name = 'importance'
+      if (mode == 'regression') {
+        if (rf_params$importance == 'accuracy') {
+          impval_name = "%IncMSE"
+        } else {
+          impval_name = 'IncNodePurity'
+        }
+      } else {
+        if (rf_params$importance == 'accuracy') {
+          impval_name = 'MeanDecreaseAccuracy'
+        } else {
+          impval_name = 'MeanDecreaseGini'
+        }
+      }
+      if (rf_engine == "ranger") {
+        importance_name = "variable.importance"
+        impval_name == ".x[[i]]"
+      }
+
       n_iter = ifelse(n_subsamples < 1, 1, n_subsamples)
       for (subsample_idx in seq_len(n_iter)) {
         # seed RNG for reproducibility
@@ -462,30 +557,6 @@ calculate_auc = function(input,
           cv = vfold_cv(X0, v = folds)
         }
 
-        seeded_rf <- function(form, data) {
-          target_indexes = which(colnames(data) == form[[2]]) # form[[2]] gets the lhs vars of the formula!
-
-          y_var = data[, target_indexes] %>% t() %>% as.factor() # This retrieves all columns corresponding to lhs vars
-          x_var = data[, -target_indexes] # This retrieves all columns which are not in lhs vars (equivalent to '.')
-          # Additional, small amounts of preprocessing were required, as you can see above.
-
-          original_seed <- .Random.seed # Save the state of the random seed
-          set.seed(1) # We have to do this in order to have similar behaviour to parsnip.
-
-          forest <- randomForest(
-            y = y_var,
-            x = x_var,
-            importance = TRUE,
-            localImp = TRUE,
-            ntree = rf_params$trees,
-            mtry = rf_params$mtry,
-            min_n = rf_params$min_n,
-            type = mode
-          )
-          .Random.seed <- original_seed # Restore random seed state
-          return (forest)
-        }
-
         withCallingHandlers({
           folded = cv %>%
             mutate(
@@ -506,29 +577,6 @@ calculate_auc = function(input,
             invokeRestart("muffleWarning")
         })
 
-        # predict on the left-out data
-        retrieve_class_preds = function(split, recipe, model) {
-          test = bake(recipe, assessment(split))
-          tbl = tibble(
-            true = test$label,
-            pred = predict(model, test),
-            prob = predict(model, test, type = 'prob')) %>%
-            # convert prob from nested df to columns
-            cbind(.$prob) %>%
-            select(-prob)
-          
-          # Restore output syntax to be the exact same as that of parsnip
-          colnames(tbl)[levels(test$label) == colnames(tbl)] %<>% paste0(".pred_", .)
-
-          return(tbl)
-        }
-        retrieve_reg_preds = function(split, recipe, model) {
-          test = bake(recipe, assessment(split))
-          tbl = tibble(
-            true = test$label,
-            pred = predict(model, test)$.pred)
-          return(tbl)
-        }
         predictions = folded %>%
           mutate(
             pred = list(
@@ -545,33 +593,6 @@ calculate_auc = function(input,
             mutate(pred = pmap(pred, retrieve_class_preds))
         }
 
-        # evalulate the predictions
-        if (mode == 'regression') {
-          multi_metric = metric_set(ccc, huber_loss_pseudo, huber_loss,
-            mae, mape, mase, rpd, rpiq, rsq_trad, rsq, smape, rmse)
-        } else {
-          multi_metric = metric_set(accuracy, precision, recall, sens,
-                                    spec, npv, ppv, roc_auc)
-        }
-
-        prob_select = 3
-        if (mode == "classification") {
-          estimator = ifelse(multiclass, "macro", "binary")
-          if (multiclass)
-            prob_select = seq(3, 3 + n_distinct(labels) - 1)
-          metric_fun = function(x)
-            multi_metric(x,
-                         truth = true,
-                         estimate = pred,
-                         prob_select,
-                         estimator = estimator)
-        } else {
-          metric_fun = function(x)
-            multi_metric(x,
-                         truth = true,
-                         estimate = pred,
-                         prob_select)
-        }
         eval = predictions %>%
           mutate(
             metrics = pred %>%
@@ -589,25 +610,6 @@ calculate_auc = function(input,
         # also calculate feature importance
         importance = NULL
         if (classifier == "rf") {
-          importance_name = 'importance'
-          if (mode == 'regression') {
-            if (rf_params$importance == 'accuracy') {
-              impval_name = "%IncMSE"
-            } else {
-              impval_name = 'IncNodePurity'
-            }
-          } else {
-            if (rf_params$importance == 'accuracy') {
-              impval_name = 'MeanDecreaseAccuracy'
-            } else {
-              impval_name = 'MeanDecreaseGini'
-            }
-          }
-          if (rf_engine == "ranger") {
-            importance_name = "variable.importance"
-            impval_name == ".x[[i]]"
-          }
-
           importance = folded %>%
             pull(fits) %>%
             # map("fit") %>% # this is now no longer needed
